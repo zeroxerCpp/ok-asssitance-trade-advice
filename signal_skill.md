@@ -93,28 +93,45 @@ All commands are READ-only market data queries.
 
 ## Signal Engine
 
+> ⚠️ **COMPUTATION RULE — MANDATORY**
+> You MUST show intermediate values for every indicator before assigning a score.
+> Do NOT skip directly to the final score or recommendation.
+> Format each calculation step as:
+> ```
+> [indicator] [timeframe]: raw_value → condition → score: +X (confidence: X.X)
+> ```
+> Example:
+> ```
+> EMA9 = 83,420 | EMA21 = 82,100 | 4H: EMA9 > EMA21, confirmed 4 candles → score: +1 (confidence: 1.0)
+> RSI(14) 1H: value = 31.2 → mild oversold (30–35) → score: +1 (confidence: 0.5)
+> MACD 4H: histogram = +12.3, expanding 2 candles → score: +1 (confidence: 0.75)
+> ```
+> Only after all indicators are computed and shown, calculate the weighted total.
+>
+> **Index notation:** `[0]` = current (latest confirmed) candle; `[-1]` = one candle before current; `[1]` = one candle after current (not yet available).
+
 ### Trend Signals (1D + 4H)
 
-| Signal | Indicator | Bullish | Bearish |
+| Signal | Indicator | Bullish (precise condition) | Bearish (precise condition) |
 |:---|:---|:---|:---|
-| EMA Crossover | EMA(9) / EMA(21) | EMA9 > EMA21, crossed up | EMA9 < EMA21, crossed down |
-| MACD | MACD(12,26,9) | MACD > signal, histogram expanding | MACD < signal, histogram expanding |
-| SuperTrend | ATR(10) × 3 | Price > SuperTrend band | Price < SuperTrend band |
-| Bollinger Band | BB(20,2) | Price bounced from lower band | Price rejected upper band |
-| Ichimoku | (9,26,52) | Price > cloud, TK cross bullish | Price < cloud, TK cross bearish |
+| EMA Crossover | EMA(9) / EMA(21) | `EMA9[-1] < EMA21[-1] AND EMA9[0] > EMA21[0]` (fresh cross), or `EMA9[0] > EMA21[0]` for ≥2 candles (confirmed) | `EMA9[-1] > EMA21[-1] AND EMA9[0] < EMA21[0]` (fresh cross), or `EMA9[0] < EMA21[0]` for ≥2 candles |
+| MACD | MACD(12,26,9) | `MACD[0] > signal[0] AND histogram[0] > histogram[-1]` (expanding bullish) | `MACD[0] < signal[0] AND histogram[0] < histogram[-1]` (expanding bearish) |
+| SuperTrend | ATR(10) × 3 | `close[0] > supertrend_lower[0]` AND was below on previous candle (fresh), or `close[0] > supertrend_lower[0]` for ≥3 candles | `close[0] < supertrend_upper[0]` AND was above on previous candle (fresh), or sustained below |
+| Bollinger Band | BB(20,2) | `low[0] <= BB_lower[0] AND close[0] > BB_lower[0]` (wick or close below then close back above) | `high[0] >= BB_upper[0] AND close[0] < BB_upper[0]` (wick or close above then close back below) |
+| Ichimoku | (9,26,52) | `close[0] > cloud_top[0] AND tenkan[0] > kijun[0]` | `close[0] < cloud_bottom[0] AND tenkan[0] < kijun[0]` |
 
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
 **Trend Score** = sum of 5 votes. Range: −5 to +5.
 
 ### Volume & Sentiment Signals (4H + 1H)
 
-| Signal | Source | Bullish | Bearish |
+| Signal | Source | Bullish (precise condition) | Bearish (precise condition) |
 |:---|:---|:---|:---|
-| Volume Breakout | 1H volume vs MA(20) | Vol > 2× MA with up candle | Vol > 2× MA with down candle |
-| Funding Rate | `market funding-rate` | Funding < −0.01% (contrarian long) | Funding > +0.05% (contrarian short) |
-| OI Change | `market open-interest` | OI rising + price rising | OI rising + price falling |
-| Order Book | `market orderbook` | Bid depth > ask depth | Ask depth > bid depth |
-| Trade Flow | `market trades` | Majority buy-side | Majority sell-side |
+| Volume Breakout | 1H volume vs MA(20) | `vol[0] > 2 × vol_MA20 AND close[0] > open[0]` | `vol[0] > 2 × vol_MA20 AND close[0] < open[0]` |
+| Funding Rate | `market funding-rate` | `funding_rate < −0.01%` (shorts paying longs → contrarian long) | `funding_rate > +0.05%` (longs paying shorts → contrarian short) |
+| OI Change | `market open-interest` | `OI[0] > OI_MA5 AND close[0] > close[-1]` (rising OI + rising price) | `OI[0] > OI_MA5 AND close[0] < close[-1]` (rising OI + falling price) |
+| Order Book | `market orderbook` | `sum(bid_depth, top10) > sum(ask_depth, top10) × 1.2` | `sum(ask_depth, top10) > sum(bid_depth, top10) × 1.2` |
+| Trade Flow | `market trades` | `buy_count / total_trades > 0.6` among last 50 trades | `sell_count / total_trades > 0.6` among last 50 trades |
 
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
 **Volume/Senti Score** = sum of 5 votes. Range: −5 to +5.
@@ -220,6 +237,66 @@ The directional sign (+/−) is applied separately. Final vote = `sign × confid
 Normalize to [−5, +5] by computing `(Σ(sign × confidence) / N) × 5`, where N is the number of signals in the group.
 Then apply dynamic weights as defined in Market State Detection.
 
+### Entry, Stop-Loss, and Take-Profit Calculation
+
+These rules define exactly how to compute the Entry Zone, SL, and TP values in the report.
+Always use confirmed candle data (confirm == "1") for swing point lookback.
+
+#### Entry Zone
+
+| Direction | Market State | Entry Zone |
+|:---|:---|:---|
+| LONG | Trending | `[EMA21_4H × 0.999, current_price]` — buy dip to EMA21 |
+| LONG | Ranging | `[BB_lower_1H, BB_mid_1H]` — fade to lower band |
+| LONG | High Volatility | `[current_price × 0.997, current_price × 1.001]` — tight zone near market |
+| SHORT | Trending | `[current_price, EMA21_4H × 1.001]` — sell rip to EMA21 |
+| SHORT | Ranging | `[BB_mid_1H, BB_upper_1H]` — fade to upper band |
+| SHORT | High Volatility | `[current_price × 0.999, current_price × 1.003]` — tight zone near market |
+
+#### Stop-Loss
+
+```
+LONG:  SL = min(low[0..9], tf=1H) × 0.998        # lowest low across the last 10 confirmed 1H candles (indices 0–9 inclusive), plus 0.2% buffer
+SHORT: SL = max(high[0..9], tf=1H) × 1.002       # highest high across the last 10 confirmed 1H candles (indices 0–9 inclusive), plus 0.2% buffer
+
+entry_mid = (entry_zone_lower + entry_zone_upper) / 2   # midpoint of the Entry Zone range above
+
+Hard cap: |entry_mid − SL| / entry_mid ≤ 3%
+If calculated SL exceeds 3%, set SL = entry_mid × (1 − 0.03) for LONG
+                                    = entry_mid × (1 + 0.03) for SHORT
+```
+
+#### Take-Profit
+
+```
+risk = |entry_mid − SL|
+
+TP1 = entry_mid + risk × 1.5    (R:R = 1.5)   for LONG
+TP1 = entry_mid − risk × 1.5                   for SHORT
+
+TP2 = entry_mid + risk × 3.0    (R:R = 3.0)   for LONG
+TP2 = entry_mid − risk × 3.0                   for SHORT
+
+Suggested execution: take 50% at TP1, trail SL to entry, let 50% run to TP2.
+```
+
+#### Minimum R:R Gate
+
+**If R:R at TP1 < 1.5, do NOT recommend the trade regardless of score.**
+Output: `⚠️ R:R = X.X — Below minimum threshold (1.5). No trade recommended.`
+
+#### Position Size
+
+```
+risk_pct = 1%  if signal strength = Moderate
+risk_pct = 2%  if signal strength = Strong
+risk_pct = 0.5% if market state = High Volatility
+
+position_size_usdt = account_size × risk_pct / (|entry_mid − SL| / entry_mid)
+```
+
+Always display position size as both `% of account` and `estimated USDT` in the report.
+
 ## Workflow
 
 ### Step 1: Identify instrument and timeframe
@@ -264,6 +341,34 @@ For each timeframe, calculate:
 Score each signal per the tables above. Compute weighted total.
 
 > **Note:** RSI(14) and KDJ(9,3,3) are supplementary confirmation signals. They are **not** included in the primary score calculation. Use them as ✅ or ⚠️ evidence in the Key Evidence section of the report only.
+
+### Step 3.5: Self-Verification Before Report
+
+Before generating the report output, verify every item below. If any item is incomplete, complete it first.
+
+**Computation completeness:**
+- [ ] All 5 Trend signals computed with raw values shown (EMA, MACD, SuperTrend, BB, Ichimoku)
+- [ ] All 5 Volume & Sentiment signals computed with raw values shown
+- [ ] RSI and KDJ computed and noted as supplementary evidence
+- [ ] ADX(14) computed → market state classified → dynamic weights selected
+- [ ] Liquidation heatmap computed (SWAP only)
+
+**Scoring integrity:**
+- [ ] Each signal score shown as: `raw_value → condition → score (confidence)`
+- [ ] Group scores = Σ(sign × confidence), normalized to [−5, +5]
+- [ ] Total Score = (Trend × w + Volume × w + Oscillator × w) × 2, result in [−10, +10]
+- [ ] Market state and weights used are explicitly stated
+
+**Entry plan validity:**
+- [ ] Entry Zone calculated using rules in "Entry, Stop-Loss, and Take-Profit Calculation"
+- [ ] SL calculated from 10-candle swing + buffer, hard cap applied if needed
+- [ ] TP1 and TP2 calculated; R:R ≥ 1.5 confirmed
+- [ ] If R:R < 1.5 → abort report, output R:R warning instead
+- [ ] Position size calculated and expressed as % of account
+
+**Signal freshness:**
+- [ ] All candle data uses only confirmed candles (confirm == "1")
+- [ ] Timestamp of data collection recorded
 
 ### Step 4: Generate report
 
