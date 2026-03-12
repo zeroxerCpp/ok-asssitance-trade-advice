@@ -120,8 +120,9 @@ All commands are READ-only market data queries.
 | Bollinger Band | BB(20,2) | `low[0] <= BB_lower[0] AND close[0] > BB_lower[0]` (wick or close below then close back above) | `high[0] >= BB_upper[0] AND close[0] < BB_upper[0]` (wick or close above then close back below) |
 | Ichimoku | (9,26,52) | `close[0] > cloud_top[0] AND tenkan[0] > kijun[0]` | `close[0] < cloud_bottom[0] AND tenkan[0] < kijun[0]` |
 
-Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
-**Trend Score** = sum of 5 votes. Range: −5 to +5.
+Scoring: Each signal vote = sign × confidence, where sign ∈ {+1, −1, 0}
+and confidence ∈ [0.0, 1.0] per the Signal Confidence Rules below.
+**Trend Score** = (Σ(sign × confidence) / 5) × 5, normalized to [−5, +5].
 
 ### Volume & Sentiment Signals (4H + 1H)
 
@@ -133,8 +134,11 @@ Scoring: +1 (bullish), −1 (bearish), 0 (neutral).
 | Order Book | `market orderbook` | `sum(bid_depth, top10) > sum(ask_depth, top10) × 1.2` | `sum(ask_depth, top10) > sum(bid_depth, top10) × 1.2` |
 | Trade Flow | `market trades` | `buy_count / total_trades > 0.6` among last 50 trades | `sell_count / total_trades > 0.6` among last 50 trades |
 
-Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
-**Volume/Senti Score** = Σ(sign × confidence) across up to 6 signals (5 base + 1 liquidation for SWAP). Normalize to [−5, +5] using `(raw_score / N) × 5` where N = actual signals computed.
+Scoring: Each signal vote = sign × confidence, where sign ∈ {+1, −1, 0}
+and confidence ∈ [0.0, 1.0] per the Signal Confidence Rules below.
+**Volume/Senti Score** = (Σ(sign × confidence) / 5) × 5, normalized to [−5, +5].
+Note: The Liquidation Heatmap signal is supplementary evidence only and does NOT
+contribute to this score.
 
 ### Liquidation Heatmap Signal
 
@@ -163,9 +167,7 @@ From the last 100 filled liquidation orders, compute:
    Reduce position size by 50% regardless of score.
 ```
 
-The liquidation score (range −2 to +2) is added as a 6th signal to the **Volume & Sentiment** group before normalization.
-
-> **Volume/Senti Score** = Σ(sign × confidence) across up to 6 signals (5 base + 1 liquidation for SWAP). Normalize to [−5, +5] using `(raw_score / N) × 5` where N = actual signals computed.
+The Liquidation Heatmap signal is **supplementary evidence only**. It does NOT contribute to the Volume/Senti Score. Include its output as ✅ or ⚠️ evidence in the Key Evidence section of the report.
 
 ### Market State Detection
 
@@ -245,9 +247,9 @@ The directional sign (+/−) is applied separately. Final vote = `sign × confid
 **Bollinger Band confidence:**
 | Condition | Confidence |
 |:---|:---:|
-| Price between mid and band | 0.4 |
-| Price touching band | 0.7 |
-| Price closed outside band (wick reversion) | 1.0 |
+| Price wick pierces band (low < BB_lower or high > BB_upper), close reverts inside | 1.0 |
+| Price wick touches band exactly (low == BB_lower or high == BB_upper) | 0.7 |
+| Price between mid and band (no band touch) | 0.4 |
 
 **Funding Rate confidence:**
 | Condition | Confidence |

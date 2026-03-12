@@ -393,14 +393,26 @@ class SignalEngine:
         rsi4h = rsi(self.c4)
         rsi1h = rsi(self.c1)
         k, d, j = kdj(self.h4, self.l4, self.c4)
+
+        def _rsi_tag(v: float) -> str:
+            if v < 20:
+                return f"extreme oversold (conf 1.0) — RSI={v:.1f}"
+            if v < 30:
+                return f"moderate oversold (conf 0.75) — RSI={v:.1f}"
+            if v < 35:
+                return f"mild oversold (conf 0.5) — RSI={v:.1f}"
+            if v > 80:
+                return f"extreme overbought (conf 1.0) — RSI={v:.1f}"
+            if v > 70:
+                return f"moderate overbought (conf 0.75) — RSI={v:.1f}"
+            if v > 65:
+                return f"mild overbought (conf 0.5) — RSI={v:.1f}"
+            return f"neutral — RSI={v:.1f}"
+
         if rsi4h is not None:
-            tag = ("oversold" if rsi4h < 30 else
-                   "overbought" if rsi4h > 70 else "neutral")
-            notes.append(f"RSI(14) 4H = {rsi4h:.1f} → {tag}")
+            notes.append(f"RSI(14) 4H → {_rsi_tag(rsi4h)}")
         if rsi1h is not None:
-            tag = ("oversold" if rsi1h < 30 else
-                   "overbought" if rsi1h > 70 else "neutral")
-            notes.append(f"RSI(14) 1H = {rsi1h:.1f} → {tag}")
+            notes.append(f"RSI(14) 1H → {_rsi_tag(rsi1h)}")
         if k is not None:
             notes.append(f"KDJ(9,3,3) 4H: K={k:.1f} D={d:.1f} J={j:.1f}")
         else:
