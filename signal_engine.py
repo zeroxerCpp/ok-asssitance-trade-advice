@@ -24,7 +24,8 @@ Requirements
 import sys
 from engine import fetch_all, SignalEngine, scan_portfolio
 
-if __name__ == "__main__":
+
+def main() -> None:
     args = sys.argv[1:]
 
     # ── Portfolio scan mode ──────────────────────────────────────────────────
@@ -60,3 +61,7 @@ if __name__ == "__main__":
         engine = SignalEngine(data, account_size=account, is_swap=is_swap)
         report = engine.run()
         print(report.text)
+
+
+if __name__ == "__main__":
+    main()
