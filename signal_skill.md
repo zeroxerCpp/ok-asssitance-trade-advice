@@ -134,32 +134,38 @@ Scoring: +1 (bullish), −1 (bearish), 0 (neutral).
 | Trade Flow | `market trades` | `buy_count / total_trades > 0.6` among last 50 trades | `sell_count / total_trades > 0.6` among last 50 trades |
 
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
-**Volume/Senti Score** = sum of up to 6 votes (5 base + 1 liquidation for SWAP). Range: −6 to +6. Normalize to [−5, +5] by `(Σ(sign × confidence) / N) × 5` where N = actual signals computed.
+**Volume/Senti Score** = Σ(sign × confidence) across up to 6 signals (5 base + 1 liquidation for SWAP). Normalize to [−5, +5] using `(raw_score / N) × 5` where N = actual signals computed.
 
 ### Liquidation Heatmap Signal
 
-> Applies to SWAP instruments only. Skip for spot.
+> Applies to SWAP instruments only. Skip this section for spot.
 
-Compute from the last 100 filled liquidation orders:
-- `liq_sell_vol` = total size of sell-side liquidations (forced long liquidation)
-- `liq_buy_vol` = total size of buy-side liquidations (forced short cover)
-- `liq_avg_event` = average size per liquidation event across the 100 orders
-- `liq_ratio` = `liq_sell_vol / (liq_buy_vol + liq_sell_vol)`
+From the last 100 filled liquidation orders, compute:
+- `liq_sell_vol` = sum of sizes where side = sell (forced long liquidation)
+- `liq_buy_vol`  = sum of sizes where side = buy (forced short cover)
+- `n_events`     = total number of liquidation events
+- `liq_avg`      = (liq_sell_vol + liq_buy_vol) / n_events   (average per event)
+- `liq_ratio`    = liq_sell_vol / (liq_sell_vol + liq_buy_vol)
 
 | Condition | Signal | Score |
 |:---|:---|:---:|
-| `liq_sell_vol > 3× liq_avg_event × count AND price near recent 10-candle low (1H)` | Panic long liquidation — contrarian LONG | +1 |
-| `liq_buy_vol > 3× liq_avg_event × count AND price near recent 10-candle high (1H)` | Short squeeze exhaustion — contrarian SHORT | −1 |
-| `liq_ratio > 0.75 AND OI dropping` | Capitulation bottom — upgrade long strength | +1 |
-| `liq_ratio < 0.25 AND OI dropping` | Short-squeeze top — upgrade short strength | −1 |
+| `liq_sell_vol > 3 × liq_avg × n_events × 0.5` AND price within 1% of 10-candle 1H low | Panic long liquidation — contrarian LONG | +1 |
+| `liq_buy_vol > 3 × liq_avg × n_events × 0.5` AND price within 1% of 10-candle 1H high | Short-squeeze exhaustion — contrarian SHORT | −1 |
+| `liq_ratio > 0.75` AND OI dropping (OI < OI_MA5) | Capitulation bottom — strengthen LONG | +1 |
+| `liq_ratio < 0.25` AND OI dropping (OI < OI_MA5) | Short-squeeze top — strengthen SHORT | −1 |
 | Neither condition met | Neutral | 0 |
 
-**Liquidation Spike edge case:** If any single liquidation event size > 5× `liq_avg_event`, output:
+> **Note:** Conditions 1+3 can stack (+2 max); conditions 2+4 can stack (−2 min).
+
+**Liquidation Spike edge case:** If any single liquidation event size > 5× `liq_avg`:
 ```
-⚠️ LIQUIDATION SPIKE detected — elevated signal reliability, but whipsaw risk high. Reduce position size by 50%.
+⚠️ LIQUIDATION SPIKE detected — elevated signal reliability, but whipsaw risk high.
+   Reduce position size by 50% regardless of score.
 ```
 
-The liquidation score (+1 or −1) is added as a 6th signal to the **Volume & Sentiment** group before normalization.
+The liquidation score (range −2 to +2) is added as a 6th signal to the **Volume & Sentiment** group before normalization.
+
+> **Volume/Senti Score** = Σ(sign × confidence) across up to 6 signals (5 base + 1 liquidation for SWAP). Normalize to [−5, +5] using `(raw_score / N) × 5` where N = actual signals computed.
 
 ### Market State Detection
 
@@ -603,7 +609,7 @@ and Entry/SL/TP calculations are implemented in **`signal_engine.py`**
 
 | Call | Description |
 |------|-------------|
-| `fetch_all(inst_id)` | Pull all required OKX data via CLI; returns `MarketData` |
+| `fetch_all(inst_id, fetch_15m=False)` | Pull all required OKX data via CLI; returns `MarketData`. Pass `fetch_15m=True` for scalp mode. |
 | `SignalEngine(data).run()` | Compute all signals; returns `Report` |
 | `report.text` | Formatted report string (same as manual output) |
 | `report.as_dict()` | Machine-readable dict with all key values |
@@ -638,5 +644,12 @@ print(report.text)
 #### CLI usage
 
 ```bash
+# Single instrument
 python3 signal_engine.py BTC-USDT-SWAP 10000
+
+# Scalp/intraday mode — fetches 15m candles and adds EMA(9/21) + RSI(14) on 15m
+python3 signal_engine.py --scalp BTC-USDT-SWAP 10000
+
+# Portfolio scan
+python3 signal_engine.py --scan BTC-USDT-SWAP ETH-USDT-SWAP SOL-USDT-SWAP 10000
 ```

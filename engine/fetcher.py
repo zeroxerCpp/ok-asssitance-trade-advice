@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import datetime
 import subprocess
-from typing import List
+from typing import List, Union
 
 from .models import Candle, MarketData
 
 
-def _run_cmd(cmd: str) -> list | dict:
+def _run_cmd(cmd: str) -> Union[list, dict]:
     """Execute an `okx` CLI command and return parsed JSON."""
     p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if p.returncode != 0:
@@ -39,18 +39,19 @@ def _parse_candles(raw: list) -> List[Candle]:
     return [c for c in rows if c.confirm == "1"]   # confirmed candles only
 
 
-def fetch_all(inst_id: str, is_swap: bool = True) -> MarketData:
+def fetch_all(inst_id: str, is_swap: bool = True, fetch_15m: bool = False) -> MarketData:
     """
     Pull all required market data from OKX CLI.
 
     Parameters
     ----------
-    inst_id  : e.g. "BTC-USDT-SWAP"
-    is_swap  : True for perpetual swaps; False for spot
+    inst_id    : e.g. "BTC-USDT-SWAP"
+    is_swap    : True for perpetual swaps; False for spot
+    fetch_15m  : When True, also fetch 15m candles for scalp/intraday analysis
 
     Returns
     -------
-    MarketData with candles (1D/4H/1H), ticker, funding, OI, liquidations,
+    MarketData with candles (1D/4H/1H[/15m]), ticker, funding, OI, liquidations,
     orderbook and trades populated.
     """
     inst_type = "SWAP" if is_swap else "SPOT"
@@ -59,32 +60,38 @@ def fetch_all(inst_id: str, is_swap: bool = True) -> MarketData:
     c4h = _parse_candles(_run_cmd(f"okx market candles {inst_id} --bar 4H --limit 200 --json"))
     c1h = _parse_candles(_run_cmd(f"okx market candles {inst_id} --bar 1H --limit 200 --json"))
 
+    # Optional 15m candles for scalp mode
+    c15m = (
+        _parse_candles(_run_cmd(f"okx market candles {inst_id} --bar 15m --limit 60 --json"))
+        if fetch_15m
+        else []
+    )
+
     tick = _run_cmd(f"okx market ticker {inst_id} --json")[0]
     fund = _run_cmd(f"okx market funding-rate {inst_id} --json")[0] if is_swap else {}
     oi_r = (
         _run_cmd(
             f"okx market open-interest --instType {inst_type} --instId {inst_id} --json"
-        )[0]
+        )
         if is_swap
         else {}
     )
     ob  = _run_cmd(f"okx market orderbook {inst_id} --sz 20 --json")[0]
     trd = _run_cmd(f"okx market trades {inst_id} --limit 50 --json")
 
-    # ── OI history for MA5 (best-effort; CLI only gives a single snapshot) ──
-    oi_val = float(oi_r.get("oi", 0)) if oi_r else 0.0
-    try:
-        oi_hist_raw = _run_cmd(
-            f"okx market open-interest --instType {inst_type} --instId {inst_id} --json"
-        )
-        oi_history = [
-            float(x.get("oi", oi_val))
-            for x in (oi_hist_raw if isinstance(oi_hist_raw, list) else [oi_hist_raw])
-        ]
-        if len(oi_history) < 5:
+    # ── OI history for MA5 — derive from the single OI call result ───────────
+    if oi_r:
+        if isinstance(oi_r, list):
+            oi_history = [float(x.get("oi", 0)) for x in oi_r]
+            oi_val = oi_history[-1] if oi_history else 0.0
+        else:
+            oi_val = float(oi_r.get("oi", 0))
             oi_history = [oi_val] * 5
-    except Exception:
-        oi_history = [oi_val] * 5
+        if len(oi_history) < 5:
+            oi_history = [oi_history[-1]] * (5 - len(oi_history)) + oi_history
+    else:
+        oi_val = 0.0
+        oi_history = [0.0] * 5
 
     # ── Liquidation heatmap (SWAP only; graceful fallback to []) ──────────
     liquidations: List[dict] = []
@@ -107,6 +114,7 @@ def fetch_all(inst_id: str, is_swap: bool = True) -> MarketData:
         candles_1d=c1d,
         candles_4h=c4h,
         candles_1h=c1h,
+        candles_15m=c15m,
         last_price=float(tick.get("last", 0)),
         funding_rate=float(fund.get("fundingRate", 0)) if fund else 0.0,
         open_interest=oi_val,

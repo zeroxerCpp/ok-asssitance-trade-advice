@@ -158,20 +158,33 @@ def kdj(
     lows: List[float],
     closes: List[float],
     n: int = 9,
-) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+) -> Tuple[float, float, float]:
     """
-    KDJ(n, 3, 3).
-    Returns (K, D, J) scalar values, or (None, None, None) if insufficient data.
+    KDJ(n, 3, 3) with Wilder smoothing.
+
+    K and D are initialized to 50.0 for the first n-bar window.
+    Returns (K, D, J) scalar values.  Returns (50.0, 50.0, 50.0) if data
+    is insufficient (len(closes) < n).
     """
     if len(closes) < n:
-        return None, None, None
-    h9 = max(highs[-n:])
-    l9 = min(lows[-n:])
-    rsv = (closes[-1] - l9) / (h9 - l9) * 100 if h9 != l9 else 50.0
-    K = rsv
-    D = rsv
+        return (50.0, 50.0, 50.0)
+
+    K = 50.0
+    D = 50.0
+
+    for i in range(n - 1, len(closes)):
+        window_high = max(highs[i - n + 1 : i + 1])
+        window_low  = min(lows[i  - n + 1 : i + 1])
+        if window_high == window_low:
+            rsv = 50.0
+        else:
+            rsv = (closes[i] - window_low) / (window_high - window_low) * 100.0
+        # Wilder smoothing: 1/3 weight on new value
+        K = (2 / 3) * K + (1 / 3) * rsv
+        D = (2 / 3) * D + (1 / 3) * K
+
     J = 3 * K - 2 * D
-    return round(K, 2), round(D, 2), round(J, 2)
+    return (round(K, 2), round(D, 2), round(J, 2))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

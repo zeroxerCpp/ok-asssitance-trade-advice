@@ -64,6 +64,9 @@ def scan_portfolio(
                 error=str(exc)[:80],
             ))
 
+    # Apply min_score filter — exclude assets with |score| < min_score (neutral signals)
+    results = [r for r in results if r.error or abs(r.score) >= min_score]
+
     # Sort: actionable first (|score| desc), then neutral, then errors
     def _sort_key(r: ScanResult):
         if r.error:

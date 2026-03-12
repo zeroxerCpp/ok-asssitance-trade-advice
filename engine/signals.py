@@ -5,7 +5,7 @@ Depends on: models, indicators, market_state.
 """
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .models import (
     MarketData, MarketState, SignalResult, GroupScore, Report,
@@ -33,6 +33,25 @@ def _normalize_group(signals: List[SignalResult], n: int) -> float:
     """Normalize Σ(sign × confidence) → [−5, +5] with group size N."""
     raw = sum(s.vote for s in signals)
     return (raw / n) * 5 if n else 0.0
+
+
+def _consecutive_streak(values: List[float], reference: List[Optional[float]], above: bool) -> int:
+    """
+    Count consecutive entries from the end of `values` where
+    values[i] > reference[i] (if above=True) or values[i] < reference[i] (if above=False).
+    Stops at the first candle that breaks the condition or where reference[i] is None.
+    """
+    streak = 0
+    for i in range(len(values) - 1, -1, -1):
+        if reference[i] is None:
+            break
+        if above and values[i] > reference[i]:
+            streak += 1
+        elif not above and values[i] < reference[i]:
+            streak += 1
+        else:
+            break
+    return streak
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,12 +82,16 @@ class SignalEngine:
         # Shorthand arrays (confirmed candles only)
         c4 = data.candles_4h
         c1 = data.candles_1h
+        c15 = data.candles_15m
         self.h4 = [c.high  for c in c4];  self.l4 = [c.low   for c in c4]
         self.c4 = [c.close for c in c4];  self.o4 = [c.open  for c in c4]
         self.v4 = [c.vol   for c in c4]
         self.h1 = [c.high  for c in c1];  self.l1 = [c.low   for c in c1]
         self.c1 = [c.close for c in c1];  self.o1 = [c.open  for c in c1]
         self.v1 = [c.vol   for c in c1]
+        self.h15 = [c.high  for c in c15]
+        self.l15 = [c.low   for c in c15]
+        self.c15 = [c.close for c in c15]
 
     # ── Trend signals (5) ────────────────────────────────────────────────────
 
@@ -131,16 +154,16 @@ class SignalEngine:
         close = self.c4[-1]
         raw = (f"Close={close:,.2f} ST={st[-1]:,.2f} "
                f"FinalLower={fl[-1]:,.2f} FinalUpper={fu[-1]:,.2f}")
-        bullish_streak = sum(
-            1 for i in range(len(st) - 1, -1, -1)
-            if fl[i] is not None and self.c4[i] > fl[i]
-        )
         if close > fl[-1]:  # type: ignore[operator]
-            conf = 1.0 if bullish_streak >= 3 else (0.5 if bullish_streak == 1 else 0.75)
+            bullish_streak = _consecutive_streak(self.c4, fl, above=True)
+            conf = 1.0 if bullish_streak >= 3 else (0.75 if bullish_streak == 2 else 0.5)
             return _mk("SuperTrend 4H", raw,
                        f"Price > lower band ({bullish_streak} bars) → bullish", +1, conf)
         else:
-            return _mk("SuperTrend 4H", raw, "Price < upper band → bearish", -1, 1.0)
+            bearish_streak = _consecutive_streak(self.c4, fu, above=False)
+            conf = 1.0 if bearish_streak >= 3 else (0.75 if bearish_streak == 2 else 0.5)
+            return _mk("SuperTrend 4H", raw,
+                       f"Price < upper band ({bearish_streak} bars) → bearish", -1, conf)
 
     def _sig_bb(self) -> SignalResult:
         """Bollinger Band(20, 2) on 4H — wick-reversion signal."""
@@ -378,8 +401,7 @@ class SignalEngine:
             tag = ("oversold" if rsi1h < 30 else
                    "overbought" if rsi1h > 70 else "neutral")
             notes.append(f"RSI(14) 1H = {rsi1h:.1f} → {tag}")
-        if k is not None:
-            notes.append(f"KDJ 4H: K={k} D={d} J={j}")
+        notes.append(f"KDJ 4H: K={k} D={d} J={j}")
         return notes
 
     # ── Entry / SL / TP ───────────────────────────────────────────────────────
@@ -512,14 +534,51 @@ class SignalEngine:
             self._sig_bb(),
             self._sig_ichimoku(),
         ]
+
+        # ── 15m scalp signals (optional, weight 0.5×) ────────────────────────
+        scalp_mode = len(self.c15) >= 21
+        scalp_sigs: List[SignalResult] = []
+        if scalp_mode:
+            cot.append("[Scalp/15m] Mode: Scalp (15m active) — adding EMA and RSI on 15m")
+            e9_15  = ema_list(self.c15, 9)
+            e21_15 = ema_list(self.c15, 21)
+            if e9_15[-1] is not None and e21_15[-1] is not None:
+                raw_15 = f"EMA9={e9_15[-1]:,.0f} EMA21={e21_15[-1]:,.0f}"
+                if e9_15[-1] > e21_15[-1]:
+                    scalp_sigs.append(_mk("EMA Cross 15m", raw_15,
+                                          "EMA9 > EMA21 → bullish 15m", +1, 0.5))
+                else:
+                    scalp_sigs.append(_mk("EMA Cross 15m", raw_15,
+                                          "EMA9 < EMA21 → bearish 15m", -1, 0.5))
+            rsi_15 = rsi(self.c15)
+            if rsi_15 is not None:
+                raw_r = f"RSI={rsi_15:.1f}"
+                if rsi_15 < 30:
+                    scalp_sigs.append(_mk("RSI 15m", raw_r,
+                                          "Oversold 15m → bullish", +1, 0.5))
+                elif rsi_15 > 70:
+                    scalp_sigs.append(_mk("RSI 15m", raw_r,
+                                          "Overbought 15m → bearish", -1, 0.5))
+                else:
+                    scalp_sigs.append(_mk("RSI 15m", raw_r,
+                                          "Neutral 15m → no signal", 0, 0.0))
+            for s in scalp_sigs:
+                cot.append(
+                    f"  {s.name}: {s.raw_value} → {s.condition} "
+                    f"→ score: {s.vote:+.2f} (conf {s.confidence:.2f})"
+                )
+
+        all_trend_sigs = trend_sigs + scalp_sigs
+        trend_n = len(all_trend_sigs)
+
         for s in trend_sigs:
             cot.append(
                 f"  {s.name}: {s.raw_value} → {s.condition} "
                 f"→ score: {s.vote:+.2f} (conf {s.confidence:.2f})"
             )
-        trend_norm = _normalize_group(trend_sigs, 5)
+        trend_norm = _normalize_group(all_trend_sigs, trend_n)
         cot.append(
-            f"  Trend raw_sum={sum(s.vote for s in trend_sigs):.2f} "
+            f"  Trend raw_sum={sum(s.vote for s in all_trend_sigs):.2f} "
             f"normalized={trend_norm:+.2f}/5"
         )
         check.append(
@@ -588,8 +647,7 @@ class SignalEngine:
         osc_norm = _normalize_group(osc_sigs, 2)
         cot.append(f"  Oscillator normalized={osc_norm:+.2f}/5")
         k4h, d4h, j4h = kdj(self.h4, self.l4, self.c4)
-        if k4h is not None:
-            cot.append(f"  KDJ(9,3,3) 4H: K={k4h} D={d4h} J={j4h} (supplementary only)")
+        cot.append(f"  KDJ(9,3,3) 4H: K={k4h} D={d4h} J={j4h} (supplementary only)")
         check.append("[✅] RSI(14) and KDJ computed")
 
         # ── Step 5: Weighted total ────────────────────────────────────────────
@@ -621,7 +679,7 @@ class SignalEngine:
         cot.append(f"[Direction] {direction} ({strength})")
 
         # ── Step 6: Entry / SL / TP ───────────────────────────────────────────
-        rr_warning: str | None = None
+        rr_warning: Optional[str] = None
         el = eh = em = sl = sl_pct = tp1 = tp2 = rr = 0.0
         risk_pct = pos_usdt = 0.0
 
@@ -686,15 +744,17 @@ class SignalEngine:
         check.append(f"[✅] Data timestamp: {self.data.timestamp}")
 
         state_label = f"{ms.state} (ADX={ms.adx:.1f}, ATR_ratio={atr_ratio:.2f}x)"
-        all_sigs    = trend_sigs + vol_sigs + osc_sigs
+        if scalp_mode:
+            state_label += " | Mode: Scalp (15m active)"
+        all_sigs    = all_trend_sigs + vol_sigs + osc_sigs
 
         return Report(
             inst_id=self.data.inst_id,
             price=self.data.last_price,
             timestamp=self.data.timestamp,
             trend=GroupScore(
-                "Trend", trend_sigs,
-                sum(s.vote for s in trend_sigs), trend_norm
+                "Trend", all_trend_sigs,
+                sum(s.vote for s in all_trend_sigs), trend_norm
             ),
             volume_senti=GroupScore(
                 "Volume/Senti", vol_sigs,

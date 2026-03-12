@@ -9,6 +9,9 @@ Usage
 Single instrument:
     python3 signal_engine.py BTC-USDT-SWAP 10000
 
+Single instrument (scalp/intraday — adds 15m candles):
+    python3 signal_engine.py --scalp BTC-USDT-SWAP 10000
+
 Portfolio scan:
     python3 signal_engine.py --scan BTC-USDT-SWAP ETH-USDT-SWAP SOL-USDT-SWAP 10000
 
@@ -42,13 +45,18 @@ if __name__ == "__main__":
 
     # ── Single-instrument mode ───────────────────────────────────────────────
     # python3 signal_engine.py BTC-USDT-SWAP 10000
+    # python3 signal_engine.py --scalp BTC-USDT-SWAP 10000
     else:
+        scalp = "--scalp" in args
+        args  = [a for a in args if a != "--scalp"]
+
         inst_id = args[0] if args else "BTC-USDT-SWAP"
         account = float(args[1]) if len(args) > 1 else 10_000.0
         is_swap = "SWAP" in inst_id.upper()
 
-        print(f"Fetching data for {inst_id} ...")
-        data   = fetch_all(inst_id, is_swap=is_swap)
+        mode_label = " [scalp/15m]" if scalp else ""
+        print(f"Fetching data for {inst_id}{mode_label} ...")
+        data   = fetch_all(inst_id, is_swap=is_swap, fetch_15m=scalp)
         engine = SignalEngine(data, account_size=account, is_swap=is_swap)
         report = engine.run()
         print(report.text)

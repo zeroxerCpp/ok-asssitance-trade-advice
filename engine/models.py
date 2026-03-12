@@ -4,7 +4,7 @@ No business logic here; import-safe from any other module.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 
@@ -38,6 +38,7 @@ class MarketData:
     asks_top10:    List[Tuple[float, float]]
     trades:        List[dict]                   # raw trade dicts
     timestamp:     str                          # UTC ISO string
+    candles_15m:   List[Candle] = field(default_factory=list)  # optional 15m candles for scalp mode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
