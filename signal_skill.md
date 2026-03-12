@@ -134,7 +134,32 @@ Scoring: +1 (bullish), −1 (bearish), 0 (neutral).
 | Trade Flow | `market trades` | `buy_count / total_trades > 0.6` among last 50 trades | `sell_count / total_trades > 0.6` among last 50 trades |
 
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
-**Volume/Senti Score** = sum of 5 votes. Range: −5 to +5.
+**Volume/Senti Score** = sum of up to 6 votes (5 base + 1 liquidation for SWAP). Range: −6 to +6. Normalize to [−5, +5] by `(Σ(sign × confidence) / N) × 5` where N = actual signals computed.
+
+### Liquidation Heatmap Signal
+
+> Applies to SWAP instruments only. Skip for spot.
+
+Compute from the last 100 filled liquidation orders:
+- `liq_sell_vol` = total size of sell-side liquidations (forced long liquidation)
+- `liq_buy_vol` = total size of buy-side liquidations (forced short cover)
+- `liq_avg_event` = average size per liquidation event across the 100 orders
+- `liq_ratio` = `liq_sell_vol / (liq_buy_vol + liq_sell_vol)`
+
+| Condition | Signal | Score |
+|:---|:---|:---:|
+| `liq_sell_vol > 3× liq_avg_event × count AND price near recent 10-candle low (1H)` | Panic long liquidation — contrarian LONG | +1 |
+| `liq_buy_vol > 3× liq_avg_event × count AND price near recent 10-candle high (1H)` | Short squeeze exhaustion — contrarian SHORT | −1 |
+| `liq_ratio > 0.75 AND OI dropping` | Capitulation bottom — upgrade long strength | +1 |
+| `liq_ratio < 0.25 AND OI dropping` | Short-squeeze top — upgrade short strength | −1 |
+| Neither condition met | Neutral | 0 |
+
+**Liquidation Spike edge case:** If any single liquidation event size > 5× `liq_avg_event`, output:
+```
+⚠️ LIQUIDATION SPIKE detected — elevated signal reliability, but whipsaw risk high. Reduce position size by 50%.
+```
+
+The liquidation score (+1 or −1) is added as a 6th signal to the **Volume & Sentiment** group before normalization.
 
 ### Market State Detection
 
@@ -337,6 +362,7 @@ For each timeframe, calculate:
 9. **Order Book** — sum top-10 bid vs ask depth
 10. **Trade Flow** — count buy vs sell among last 50 trades
 11. **ADX(14)** — classify market state (Trending / Ranging / High Volatility / Low Liquidity); select dynamic weights accordingly
+12. **Liquidation Heatmap** (SWAP only) — compute liq_sell_vol, liq_buy_vol, liq_ratio; detect spike; add signal to Volume/Senti group
 
 Score each signal per the tables above. Compute weighted total.
 
@@ -351,7 +377,7 @@ Before generating the report output, verify every item below. If any item is inc
 - [ ] All 5 Volume & Sentiment signals computed with raw values shown
 - [ ] RSI and KDJ computed and noted as supplementary evidence
 - [ ] ADX(14) computed → market state classified → dynamic weights selected
-- [ ] Liquidation heatmap computed (SWAP only)
+- [ ] Liquidation heatmap computed (SWAP only): liq_ratio noted, spike flag checked
 
 **Scoring integrity:**
 - [ ] Each signal score shown as: `raw_value → condition → score (confidence)`
@@ -463,6 +489,60 @@ Ask:
 - **Spot instruments**: skip funding-rate and OI; use Trend + Oscillator + Volume only.
 - **Insufficient candles** (< 26): note "Insufficient history for MACD", skip that signal.
 - **Price at extremes**: run `okx market price-limit <instId>` before recommending near limits.
+
+---
+
+## Portfolio Scanner Mode
+
+Activate when the user asks to compare multiple assets or find the best current trade opportunity.
+
+### Trigger phrases
+- "scan [asset list]" / "portfolio scan"
+- "which is the best trade?" / "best trade now"
+- "compare BTC and ETH" / "quick scan"
+- "rank these: BTC ETH SOL"
+
+### Scanner Workflow
+
+**Step S1: Collect 4H + 1H candles for each asset**
+```bash
+# Repeat for each instId in the list
+okx market candles <instId> --bar 4H --limit 200 --json
+okx market candles <instId> --bar 1H --limit 200 --json
+okx market ticker <instId> --json
+okx market funding-rate <instId> --json
+okx market open-interest --instType SWAP --instId <instId> --json
+```
+
+**Step S2: Compute abbreviated signal score for each asset**
+
+Run the full signal pipeline (Trend + Oscillator + Volume/Senti) for each asset using the same rules as the standard single-asset workflow. Produce a Total Score for each.
+
+**Step S3: Rank assets by absolute score strength**
+
+Sort assets by `|Total Score|` descending. The asset with the highest absolute score and a clear directional bias (≥ +3 long or ≤ −3 short) is the recommended trade.
+
+**Step S4: Output ranked table**
+
+```
+Asset         Score    Direction    State
+─────────────────────────────────────────
+ETH-USDT-SWAP  +7.1    Strong Long  Trending
+BTC-USDT-SWAP  +5.2    Moderate Long Trending
+SOL-USDT-SWAP  −1.8    Neutral      Ranging
+```
+
+→ "Best trade: **ETH-USDT-SWAP** (Long). Entry: X, TP: Y, SL: Z"
+
+**Step S5: If no asset scores ≥ +3 or ≤ −3**
+
+Output: "No strong signal found across scanned assets. All scores are neutral (< ±3). Wait for confirmation."
+
+### Scanner Rules
+- Use 4H + 1H only (skip 1D) to keep scan fast.
+- Liquidation heatmap is optional for scanner mode; include only if data is readily available.
+- If more than 5 assets are requested, prioritize the top 5 by 24h volume from the provided list.
+- Always state how many assets were scanned in the output.
 
 ---
 

@@ -92,7 +92,7 @@ def fetch_all(inst_id: str, is_swap: bool = True) -> MarketData:
         try:
             liq_raw = _run_cmd(
                 f"okx market liquidation-orders --instType {inst_type} "
-                f"--instId {inst_id} --limit 100 --json"
+                f"--instId {inst_id} --state filled --limit 100 --json"
             )
             if isinstance(liq_raw, list):
                 liquidations = liq_raw
