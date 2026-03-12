@@ -105,7 +105,7 @@ All commands are READ-only market data queries.
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
 **Trend Score** = sum of 5 votes. Range: −5 to +5.
 
-### Oscillator Signals (4H + 1H)
+### Volume & Sentiment Signals (4H + 1H)
 
 | Signal | Source | Bullish | Bearish |
 |:---|:---|:---|:---|
@@ -116,11 +116,11 @@ Scoring: +1 (bullish), −1 (bearish), 0 (neutral).
 | Trade Flow | `market trades` | Majority buy-side | Majority sell-side |
 
 Scoring: +1 (bullish), −1 (bearish), 0 (neutral).  
-**Volume Score** = sum of 5 votes. Range: −5 to +5.
+**Volume/Senti Score** = sum of 5 votes. Range: −5 to +5.
 
 ### Final Score & Recommendation
 
-**Total Score** = Trend × 0.4 + Oscillator × 0.35 + Volume × 0.25 (normalized to −10..+10)
+**Total Score** = (Trend × 0.4 + Volume/Senti × 0.60) × 2 (normalized to −10..+10)
 
 | Score Range | Direction | Action |
 |---:|:---:|:---|
@@ -171,6 +171,8 @@ For each timeframe, calculate:
 
 Score each signal per the tables above. Compute weighted total.
 
+> **Note:** RSI(14) and KDJ(9,3,3) are supplementary confirmation signals. They are **not** included in the primary score calculation. Use them as ✅ or ⚠️ evidence in the Key Evidence section of the report only.
+
 ### Step 4: Generate report
 
 Output structured recommendation:
@@ -215,7 +217,14 @@ Always confirm with your own judgment.
 
 ### Step 5: Offer execution
 
-Ask: "Trade this signal? Reply: `yes demo|live <USDT amount>`"
+Ask:
+
+> ⚠️ Signal generated at `<timestamp>`. Market conditions may have changed.
+> If more than **5 minutes** have passed since data collection, re-run analysis before executing.
+>
+> Trade this signal? Reply: `yes demo|live <USDT amount> [max <X>% of account]`
+>
+> Recommended position size: ≤ 2% of account per trade unless signal strength is **Strong**.
 
 ---
 
@@ -267,7 +276,12 @@ Ask: "Trade this signal? Reply: `yes demo|live <USDT amount>`"
 - **RSI(14)**: `RS = AvgGain/AvgLoss`, `RSI = 100 − 100/(1+RS)`
 - **KDJ**: `%K = (Close − Low₉)/(High₉ − Low₉) × 100`, `%D = SMA(%K)`, `J = 3K − 2D`
 
-Candle columns: `[ts, open, high, low, close, vol, volCcy]`
+- **ATR(n)**: True Range `TRᵢ = max(Highᵢ − Lowᵢ, |Highᵢ − Closeᵢ₋₁|, |Lowᵢ − Closeᵢ₋₁|)`, then `ATR = EMA(TR, n)`
+- **SuperTrend(10, 3)**: `BasicUpper = (High+Low)/2 + 3×ATR(10)`, `BasicLower = (High+Low)/2 − 3×ATR(10)`. Price above final lower band → bullish; price below final upper band → bearish.
+
+Candle columns: `[ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]`
+
+⚠️ Only use candles where confirm == "1". The last (most recent) candle may still be forming and should be excluded from all indicator calculations.
 
 ---
 
